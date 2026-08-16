@@ -105,12 +105,13 @@
           </div>
 
           <div class="platform-hint" id="withnyHint" style="display:none">
-            <b>Withny 历史存档：</b>请选择浏览器导出的"包含内容"HAR，此模式不接受普通 URL。HAR 可能包含登录信息，请勿分享，完成后建议删除。<a href="#" onclick="setActivePage('help');return false;">查看教程 →</a>
+            <b>Withny：</b>历史存档请选择浏览器导出的“包含内容”HAR；直播录制请选择 withny-dl 的 YAML 配置。配置和凭据可能包含登录信息，请勿分享。<a href="#" onclick="setActivePage('help');return false;">查看教程 →</a>
           </div>
 
           <div class="url-row">
             <textarea class="url-input" id="urlInput" rows="1" placeholder="粘贴视频 / 播放列表 / 频道 / 直播链接，回车开始下载（每行一个链接，Shift/Ctrl+回车换行）…"></textarea>
             <button class="btn btn-primary" id="btnStart" onclick="startDl()"><span class="icon" data-ico="plus"></span>开始下载</button>
+            <button class="btn" id="btnWithnyLive" onclick="startWithnyLive()" style="display:none"><span class="icon" data-ico="radio"></span>选择配置并录制</button>
             <button class="btn btn-danger" id="btnStop" onclick="stopDl()" disabled><span class="icon" data-ico="square"></span>停止</button>
           </div>
 
@@ -493,6 +494,7 @@
           <h3><span class="icon" data-ico="file-text"></span>Withny 历史存档</h3>
           <div class="help-content">
             <p><b>使用方式：</b>在下载任务页选择 Withny，点击「选择 HAR 并下载」，依次选择浏览器导出的“包含内容”HAR 和保存位置。</p>
+            <p><b>直播录制：</b>将 <code>withny-dl-windows-amd64.exe</code> 放在程序目录，在 Withny 模式点击「选择配置并录制」，选择 withny-dl 的 YAML 配置。工具会持续监控配置中的频道，点击任务区「停止」结束监控和录制。</p>
             <p><b>安全限制：</b>仅处理已授权的普通未加密 HLS 历史存档；检测到 DRM、加密 HLS、无媒体播放列表正文或缺失签名 Cookie 时会拒绝下载。</p>
             <p><b>隐私提示：</b>HAR 可能包含登录 Cookie 和签名地址，请勿上传或分享，使用完成后建议立即删除。</p>
           </div>
@@ -617,12 +619,12 @@
           <span class="about-mark"><span class="icon" data-ico="download"></span></span>
           <h2>多平台视频下载工具</h2>
           <p id="aboutVer"></p>
-          <p>支持平台：YouTube / Bilibili / Twitch / Niconico / Fantia / TwitCasting / Twitter</p>
-          <p class="small">另提供 Withny 已授权历史存档 HAR 保存功能</p>
+          <p>支持平台：YouTube / Bilibili / Twitch / Niconico / NicoChannel / Fantia / TwitCasting / Twitter</p>
+          <p class="small">另提供 Withny 已授权历史存档 HAR 保存与直播监控录制功能</p>
           <p class="small">基于 yt-dlp + ffmpeg ｜ 原版作者：<a href="https://github.com/maomaoyexi" target="_blank" rel="noopener noreferrer">猫猫葉汐A_spy (@maomaoyexi)</a></p>
           <p class="small">v2.1.0 UI 重构：<a href="https://github.com/DarkKandaoMaster" target="_blank" rel="noopener noreferrer">DarkKandaoMaster（强壮的砍刀）</a></p>
-          <p class="small">v2.2.0 Twitter/X、TwitCasting、UI 与音频工具：<a href="https://github.com/ergou10086" target="_blank" rel="noopener noreferrer">ErgouTree (@ergou10086)</a></p>
-          <p class="small">v2.2.0 Withny 下载与 UI 调整：<a href="https://github.com/maomaoyexi" target="_blank" rel="noopener noreferrer">猫猫葉汐A_spy (@maomaoyexi)</a></p>
+          <p class="small">v2.3.0 NicoChannel、Twitter/X、TwitCasting、UI 与音频工具：<a href="https://github.com/ergou10086" target="_blank" rel="noopener noreferrer">ErgouTree (@ergou10086)</a></p>
+          <p class="small">v2.3.0 Withny 历史存档、直播录制与 UI 调整：<a href="https://github.com/maomaoyexi" target="_blank" rel="noopener noreferrer">猫猫葉汐A_spy (@maomaoyexi)</a></p>
           <section class="card" style="margin-top:1.5rem;text-align:left">
             <div class="card-lead"><span class="icon" data-ico="check"></span><div class="card-title">依赖文件状态</div></div>
             <div class="dep-status" id="depStatus"></div>

@@ -176,6 +176,8 @@ function selectPlatform(name) {
   const withnyHintEl = $('withnyHint');
   if (withnyHintEl) withnyHintEl.style.display = name === 'Withny' ? 'block' : 'none';
   const withnyMode = name === 'Withny';
+  const liveButton = $('btnWithnyLive');
+  if(liveButton) liveButton.style.display = withnyMode ? 'inline-flex' : 'none';
   const input = $('urlInput');
   input.disabled = withnyMode;
   input.placeholder = withnyMode
@@ -370,7 +372,7 @@ async function resetSettings() {
 
 async function loadDeps() {
   const d = await api('/api/deps');
-  const names = {'yt-dlp':'yt-dlp',ffmpeg:'ffmpeg',ffprobe:'ffprobe',fantiadl:'fantiadl(可选)',nicochannel_plugin:'nicochannel插件(可选)'};
+  const names = {'yt-dlp':'yt-dlp',ffmpeg:'ffmpeg',ffprobe:'ffprobe',fantiadl:'fantiadl(可选)',withny_dl:'withny-dl(Withny直播，可选)',nicochannel_plugin:'nicochannel插件(可选)'};
   const box = $('depStatus');
   box.innerHTML = '';
   for(const [k,v] of Object.entries(d)) {
@@ -459,15 +461,18 @@ async function startDl() {
 
 async function startWithnyArchive() {
   $('btnStart').disabled = true;
+  $('btnWithnyLive').disabled = true;
   try {
     const result = await api('/api/start-withny-archive', {method:'POST', body:'{}'});
     if(result.error) {
       alert(result.error);
       $('btnStart').disabled = false;
+      $('btnWithnyLive').disabled = false;
       return;
     }
     if(result.cancelled) {
       $('btnStart').disabled = false;
+      $('btnWithnyLive').disabled = false;
       return;
     }
     download_running = true;
@@ -478,6 +483,35 @@ async function startWithnyArchive() {
   } catch(e) {
     alert('Withny 下载启动失败: ' + e.message);
     $('btnStart').disabled = false;
+    $('btnWithnyLive').disabled = false;
+  }
+}
+
+async function startWithnyLive() {
+  $('btnStart').disabled = true;
+  $('btnWithnyLive').disabled = true;
+  try {
+    const result = await api('/api/start-withny-live', {method:'POST', body:'{}'});
+    if(result.error) {
+      alert(result.error);
+      $('btnStart').disabled = false;
+      $('btnWithnyLive').disabled = false;
+      return;
+    }
+    if(result.cancelled) {
+      $('btnStart').disabled = false;
+      $('btnWithnyLive').disabled = false;
+      return;
+    }
+    download_running = true;
+    $('btnStop').disabled = false;
+    $('statOk').textContent = '0';
+    $('statFail').textContent = '0';
+    $('statTotal').textContent = '1';
+  } catch(e) {
+    alert('Withny 直播录制启动失败: ' + e.message);
+    $('btnStart').disabled = false;
+    $('btnWithnyLive').disabled = false;
   }
 }
 
@@ -743,6 +777,7 @@ function connectSSE() {
       const d = evt.data;
       download_running = Boolean(d.running);
       $('btnStart').disabled = download_running || d.phase === 'suspended';
+      $('btnWithnyLive').disabled = download_running || d.phase === 'suspended';
       $('btnStop').disabled = !download_running || d.phase === 'stopping';
     } else if(evt.type === 'stats') {
       const d = evt.data;

@@ -55,6 +55,8 @@ class WebPageTests(unittest.TestCase):
         self.assertNotIn("tabler.min.js", html)
         # Token 占位符
         self.assertIn("__SESSION_TOKEN__", html)
+        self.assertIn('id="btnWithnyLive"', html)
+        self.assertIn('id="nicochannelHint"', html)
 
     def test_reset_config_uses_post(self):
         _skip_if_frozen()
@@ -64,6 +66,7 @@ class WebPageTests(unittest.TestCase):
             js = f.read()
         # reset-config 使用 POST 在 JS 中
         self.assertIn("api('/api/reset-config', {method:'POST'})", js)
+        self.assertIn("api('/api/start-withny-live'", js)
 
     def test_normal_palette_toggle_is_available(self):
         _skip_if_frozen()
