@@ -12,6 +12,9 @@ UPDATE_HOSTS = {
 MAX_UPDATE_SIZE = 512 * 1024 * 1024
 IDLE_TIMEOUT = 30
 
+LEGACY_ALL_SUBTITLE_LANGS = "all,-live_chat"
+RECOMMENDED_SUBTITLE_LANGS = "ja.*,zh.*,zh-Hans,zh-Hant,en.*,ko.*"
+
 DEFAULT_CONFIG = {
     "PLATFORM": "YouTube",
     "RESOLUTION": "best",
@@ -34,6 +37,9 @@ DEFAULT_CONFIG = {
     "HWACCEL": "cpu",
     "EMBED_META": 1,
     "DOWNLOAD_THUMB": 1,
+    "DOWNLOAD_SUBTITLES": 0,
+    "SUBTITLE_TYPE": "all",
+    "SUBTITLE_LANGS": RECOMMENDED_SUBTITLE_LANGS,
     "WIN_FILENAMES": 1,
     "STRICT_FILENAME": 0,
     "NICO_COMMENTS": 0,
@@ -62,6 +68,7 @@ BROWSER_OPTIONS = ["chrome", "edge", "firefox", "brave", "opera"]
 PROXY_TYPE_OPTIONS = ["http", "socks5"]
 MP3_BITRATE_OPTIONS = [128, 192, 256, 320]
 BILI_POLICY_OPTIONS = ["all", "select"]
+SUBTITLE_TYPE_OPTIONS = ["all", "manual", "auto"]
 LIVE_STREAM_METHOD_OPTIONS = ["yt-dlp"]
 LIVE_STREAM_METHOD_LABELS = ["yt-dlp (默认)"]
 
