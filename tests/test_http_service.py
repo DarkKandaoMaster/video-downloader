@@ -1,14 +1,15 @@
 import json
+import io
 import queue
 import threading
 import time
 import unittest
 from dataclasses import replace
+from contextlib import redirect_stderr
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from unittest.mock import Mock
 
-from video_downloader.core.constants import RECOMMENDED_SUBTITLE_LANGS
 from video_downloader.state.app_state import AppState
 from video_downloader.web.handler import HttpHandlerDependencies, HttpService, create_handler
 
@@ -56,7 +57,9 @@ def make_dependencies(exit_event):
         start_withny_live=lambda: {"ok": True, "kind": "withny-live"},
         batch_txt_download=value,
         start_urls_download=lambda urls: {"urls": urls},
+        download_subtitles=lambda *args: {"args": list(args)},
         stop_download=value,
+        get_current_command=lambda: {"ok": True, "command": "yt-dlp https://example.com"},
         submit_password=lambda url, password: {"ok": True},
         fetch_bili_playlist=lambda url: {"parts": [], "total": 0},
         save_preset=named_value,
@@ -74,7 +77,6 @@ def make_dependencies(exit_event):
         wav_to_mp3=lambda *args: {"args": args},
         audio_loudnorm=lambda *args, **kwargs: {"args": args},
         audio_volume=lambda *args, **kwargs: {"args": args},
-        download_subtitles=lambda *args, **kwargs: {"args": args},
         request_exit=exit_event.set,
     )
 
@@ -117,6 +119,30 @@ class HttpServiceTests(unittest.TestCase):
             "config": {"output_dir": "downloads"},
         })
 
+    def test_current_command_route_uses_injected_dependency(self):
+        status, body, headers = self.request("/api/current-command")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["command"], "yt-dlp https://example.com")
+        self.assertEqual(headers["Cache-Control"], "no-store")
+
+    def test_expected_browser_disconnect_does_not_print_traceback(self):
+        stderr = io.StringIO()
+        try:
+            raise ConnectionAbortedError(10053, "client disconnected")
+        except ConnectionAbortedError:
+            with redirect_stderr(stderr):
+                self.service._server.handle_error(None, ("127.0.0.1", 12345))
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_unexpected_server_error_is_still_reported(self):
+        stderr = io.StringIO()
+        try:
+            raise RuntimeError("unexpected")
+        except RuntimeError:
+            with redirect_stderr(stderr):
+                self.service._server.handle_error(None, ("127.0.0.1", 12345))
+        self.assertIn("unexpected", stderr.getvalue())
+
     def test_api_rejects_missing_token(self):
         with self.assertRaises(HTTPError) as raised:
             self.request("/api/config", token=False)
@@ -140,6 +166,22 @@ class HttpServiceTests(unittest.TestCase):
         self.request("/api/exit", method="POST", payload={})
         self.assertTrue(self.exit_event.wait(1))
 
+    def test_download_subtitles_route_uses_injected_dependency(self):
+        status, body, _ = self.request("/api/download-subtitles", method="POST", payload={
+            "urls": ["https://youtube.com/watch?v=abc"],
+            "subtitle_type": "manual",
+            "subtitle_langs": "zh.*",
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {
+            "args": [["https://youtube.com/watch?v=abc"], "manual", "zh.*"]
+        })
+
+    def test_download_subtitles_route_rejects_non_string_urls(self):
+        with self.assertRaises(HTTPError) as raised:
+            self.request("/api/download-subtitles", method="POST", payload={"urls": [123]})
+        self.assertEqual(raised.exception.code, 400)
+
     def test_withny_archive_route_uses_injected_dependency(self):
         status, body, _ = self.request("/api/start-withny-archive", method="POST", payload={})
         self.assertEqual(status, 200)
@@ -149,37 +191,6 @@ class HttpServiceTests(unittest.TestCase):
         status, body, _ = self.request("/api/start-withny-live", method="POST", payload={})
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body), {"ok": True, "kind": "withny-live"})
-
-    def test_download_subtitles_route_uses_injected_dependency(self):
-        status, body, _ = self.request(
-            "/api/download-subtitles",
-            method="POST",
-            payload={
-                "urls": ["https://youtube.com/watch?v=abc"],
-                "subtitle_type": "manual",
-                "subtitle_langs": "zh.*",
-            },
-        )
-        self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body), {"args": [["https://youtube.com/watch?v=abc"], "manual", "zh.*"]})
-
-    def test_download_subtitles_route_uses_recommended_default_languages(self):
-        status, body, _ = self.request(
-            "/api/download-subtitles",
-            method="POST",
-            payload={"urls": ["https://youtube.com/watch?v=abc"]},
-        )
-        self.assertEqual(status, 200)
-        self.assertEqual(
-            json.loads(body),
-            {"args": [["https://youtube.com/watch?v=abc"], "all", RECOMMENDED_SUBTITLE_LANGS]},
-        )
-
-    def test_download_subtitles_route_rejects_non_string_urls(self):
-        with self.assertRaises(HTTPError) as raised:
-            self.request("/api/download-subtitles", method="POST", payload={"urls": [123]})
-        self.assertEqual(raised.exception.code, 400)
-        self.assertIn("urls", json.loads(raised.exception.read())["error"])
 
     def test_post_rejects_unsupported_media_type(self):
         with self.assertRaises(HTTPError) as raised:

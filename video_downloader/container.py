@@ -124,7 +124,8 @@ class AppContainer:
 
         # ---- 进度回调 ----
         def update_progress(percent: float, status: str | None = None,
-                            speed: str = "", eta: str = "") -> None:
+                            speed: str = "", eta: str = "",
+                            stage: str | None = None) -> None:
             dc = app_state.download_thread_context
             context_task_id = getattr(dc, "task_id", None)
             if context_task_id is not None and context_task_id != download_manager.snapshot()["generation"]:
@@ -134,6 +135,8 @@ class AppContainer:
                 app_state.progress_data["status"] = status
             app_state.progress_data["speed"] = speed
             app_state.progress_data["eta"] = eta
+            if stage in {"video", "audio"}:
+                app_state.progress_data["stage"] = stage
             app_state.publish({"type": "progress", "data": dict(app_state.progress_data)})
 
         def broadcast_download_state() -> None:
@@ -153,6 +156,7 @@ class AppContainer:
                           platform_override: str | None = None,
                           config_override: dict | None = None,
                           bili_parts: str | None = None,
+                          use_ffmpeg_for_hls: bool = False,
                           include_subtitles: bool = True,
                           subtitle_only: bool = False) -> list[str]:
             cfg = config_override if config_override is not None else app_state.config_snapshot()
@@ -173,23 +177,25 @@ class AppContainer:
                 cookie_file=cookie_file if cookie_file.exists() else None,
                 bili_parts=bili_parts,
                 nicochannel_auth_token=nicochannel_token,
+                use_ffmpeg_for_hls=use_ffmpeg_for_hls,
                 include_subtitles=include_subtitles,
                 subtitle_only=subtitle_only,
             )
 
         def build_subtitle_command(url: str, *, subtitle_type: str, subtitle_langs: str) -> list[str]:
-            cfg = dict(app_state.config_snapshot())
-            cfg.update({
-                "DOWNLOAD_SUBTITLES": 1,
-                "SUBTITLE_TYPE": subtitle_type,
-                "SUBTITLE_LANGS": subtitle_langs,
-            })
-            platform_name = detect_platform(url) or cfg.get("PLATFORM", "YouTube")
+            cfg = app_state.config_snapshot()
+            detected = detect_platform(url)
+            effective_platform = detected if detected else cfg["PLATFORM"]
+            subtitle_config = dict(
+                cfg,
+                DOWNLOAD_SUBTITLES=1,
+                SUBTITLE_TYPE=subtitle_type,
+                SUBTITLE_LANGS=subtitle_langs,
+            )
             return build_command(
                 url,
-                platform_override=platform_name,
-                config_override=cfg,
-                include_subtitles=True,
+                platform_override=effective_platform,
+                config_override=subtitle_config,
                 subtitle_only=True,
             )
 
@@ -201,6 +207,10 @@ class AppContainer:
             save_config=save_config,
             log=add_log,
             build_subtitle_command=build_subtitle_command,
+            download_manager=download_manager,
+            broadcast_download_state=broadcast_download_state,
+            cancel_idle_timer=cancel_idle_timer,
+            start_idle_timer=start_idle_timer,
         )
 
         # ---- 下载执行器 ----
@@ -236,6 +246,9 @@ class AppContainer:
         def stop_download() -> dict:
             return download_executor.stop_download()
 
+        def get_current_command() -> dict:
+            return download_executor.get_current_ytdlp_command()
+
         def fetch_bili_playlist(url: str) -> dict:
             return download_executor.fetch_bili_playlist(url)
 
@@ -258,10 +271,10 @@ class AppContainer:
         wav_to_mp3 = tool_service.wav_to_mp3
         audio_loudnorm = tool_service.audio_loudnorm
         audio_volume = tool_service.audio_volume
-        download_subtitles = tool_service.download_subtitles
         browse_folder = tool_service.browse_folder
         handle_tool_action = tool_service.handle_tool_action
         read_urls_file = tool_service.read_urls_file
+        download_subtitles = tool_service.download_subtitles
 
         def batch_txt_download(bili_parts_map: dict | None = None) -> dict:
             """从 urls.txt 批量下载（混合平台）。"""
@@ -303,7 +316,9 @@ class AppContainer:
                 start_withny_live=start_withny_live,
                 batch_txt_download=batch_txt_download,
                 start_urls_download=start_urls_download,
+                download_subtitles=download_subtitles,
                 stop_download=stop_download,
+                get_current_command=get_current_command,
                 submit_password=submit_password,
                 fetch_bili_playlist=fetch_bili_playlist,
                 save_preset=save_preset,
@@ -321,7 +336,6 @@ class AppContainer:
                 wav_to_mp3=wav_to_mp3,
                 audio_loudnorm=audio_loudnorm,
                 audio_volume=audio_volume,
-                download_subtitles=download_subtitles,
                 request_exit=request_exit,
             )
             return HttpService(lambda: create_handler(deps), port=0)

@@ -30,8 +30,6 @@ _ERROR_REASONS = {
     "LIVE_STREAM_METHOD": "直播下载方式仅支持 yt-dlp",
     "AUDIO_MODE": "音频模式选项无效",
     "AUDIO_FORMAT": "音频格式选项无效",
-    "SUBTITLE_TYPE": "字幕类型选项无效",
-    "SUBTITLE_LANGS": "字幕语言设置长度不能超过 200 字符",
     "THREADS": "线程数需在 1-32 之间",
     "SPEED_LIMIT": "限速值需在 0-100000 MB/s 之间",
     "COOKIE_MODE": "Cookie模式仅支持 1(文件) 或 2(浏览器)",
@@ -44,6 +42,8 @@ _ERROR_REASONS = {
     "EMBED_META": "嵌入元数据仅支持 0 或 1",
     "DOWNLOAD_THUMB": "下载封面仅支持 0 或 1",
     "DOWNLOAD_SUBTITLES": "字幕下载开关仅支持 0 或 1",
+    "SUBTITLE_TYPE": "字幕类型选项无效",
+    "SUBTITLE_LANGS": "字幕语言设置长度不能超过 200 字符",
     "WIN_FILENAMES": "Win文件名兼容仅支持 0 或 1",
     "STRICT_FILENAME": "严格文件名仅支持 0 或 1",
     "NICO_COMMENTS": "Niconico弹幕仅支持 0 或 1",
@@ -81,8 +81,8 @@ def validate_config(values, base=None):
         "BILI_MULTIP_POLICY": BILI_POLICY_OPTIONS,
         "AUDIO_MODE": AUDIO_MODE_OPTIONS,
         "AUDIO_FORMAT": AUDIO_FORMAT_OPTIONS,
-        "SUBTITLE_TYPE": SUBTITLE_TYPE_OPTIONS,
         "LIVE_STREAM_METHOD": LIVE_STREAM_METHOD_OPTIONS,
+        "SUBTITLE_TYPE": SUBTITLE_TYPE_OPTIONS,
     }
     integer_ranges = {
         "THREADS": (1, 32),

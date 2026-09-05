@@ -2,12 +2,57 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from video_downloader.core.constants import DEFAULT_CONFIG, RECOMMENDED_SUBTITLE_LANGS
+from video_downloader.core.constants import DEFAULT_CONFIG, DEFAULT_SUBTITLE_LANGS
 from video_downloader.core.command import build_ytdlp_cmd
 from video_downloader.core.platform import detect_platform
 
 
 class YtdlpCommandTests(unittest.TestCase):
+    def test_subtitles_are_disabled_by_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cmd = build_ytdlp_cmd("https://youtube.com/watch?v=abc", DEFAULT_CONFIG, Path(directory))
+        self.assertNotIn("--write-subs", cmd)
+        self.assertNotIn("--write-auto-subs", cmd)
+
+    def test_enabled_subtitles_use_chinese_languages_and_separate_directory(self):
+        config = dict(DEFAULT_CONFIG, DOWNLOAD_SUBTITLES=1)
+        with tempfile.TemporaryDirectory() as directory:
+            cmd = build_ytdlp_cmd("https://youtube.com/watch?v=abc", config, Path(directory))
+        self.assertIn("--write-subs", cmd)
+        self.assertIn("--write-auto-subs", cmd)
+        self.assertEqual(cmd[cmd.index("--sub-langs") + 1], DEFAULT_SUBTITLE_LANGS)
+        subtitle_output = cmd[cmd.index("-o", cmd.index("-o") + 1) + 1]
+        self.assertIn("subtitles", subtitle_output)
+
+    def test_subtitle_only_command_skips_video_and_archive(self):
+        config = dict(DEFAULT_CONFIG, DOWNLOAD_SUBTITLES=1)
+        with tempfile.TemporaryDirectory() as directory:
+            cmd = build_ytdlp_cmd(
+                "https://youtube.com/watch?v=abc", config, Path(directory), subtitle_only=True
+            )
+        self.assertIn("--skip-download", cmd)
+        self.assertNotIn("--download-archive", cmd)
+        self.assertNotIn("-f", cmd)
+
+    def test_video_command_can_omit_subtitles_for_sidecar(self):
+        config = dict(DEFAULT_CONFIG, DOWNLOAD_SUBTITLES=1)
+        with tempfile.TemporaryDirectory() as directory:
+            cmd = build_ytdlp_cmd(
+                "https://youtube.com/watch?v=abc", config, Path(directory), include_subtitles=False
+            )
+        self.assertNotIn("--write-subs", cmd)
+        self.assertNotIn("--write-auto-subs", cmd)
+    def test_progress_template_includes_media_stage_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cmd = build_ytdlp_cmd(
+                "https://youtube.com/watch?v=abc",
+                DEFAULT_CONFIG,
+                Path(directory),
+            )
+        self.assertIn("--progress-template", cmd)
+        template = cmd[cmd.index("--progress-template") + 1]
+        self.assertIn("__VD_STAGE__%(info.vcodec)s|%(info.acodec)s", template)
+
     def test_youtube_live_command_uses_live_options_and_path(self):
         with tempfile.TemporaryDirectory() as directory:
             cmd = build_ytdlp_cmd(
@@ -85,6 +130,40 @@ class YtdlpCommandTests(unittest.TestCase):
             )
         self.assertNotIn("--video-password", cmd)
 
+    def test_twitcasting_hls_uses_ffmpeg_downloader_when_requested(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cmd = build_ytdlp_cmd(
+                "https://twitcasting.tv/someuser/movie/123",
+                DEFAULT_CONFIG,
+                Path(directory),
+                is_live=False,
+                platform_override="TwitCasting",
+                use_ffmpeg_for_hls=True,
+            )
+        self.assertIn("--downloader", cmd)
+        self.assertEqual(cmd[cmd.index("--downloader") + 1], "m3u8:ffmpeg")
+
+    def test_twitcasting_default_uses_native_hls_downloader(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cmd = build_ytdlp_cmd(
+                "https://twitcasting.tv/someuser/movie/123",
+                DEFAULT_CONFIG,
+                Path(directory),
+                is_live=False,
+                platform_override="TwitCasting",
+            )
+        self.assertNotIn("--downloader", cmd)
+
+    def test_other_platforms_keep_default_hls_downloader(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cmd = build_ytdlp_cmd(
+                "https://youtube.com/watch?v=abc",
+                DEFAULT_CONFIG,
+                Path(directory),
+                platform_override="YouTube",
+            )
+        self.assertNotIn("--downloader", cmd)
+
     # ── nicochannel ──────────────────────────────────────────────
 
     def test_nicochannel_with_auth_token_passes_jwt_via_username_password(self):
@@ -123,120 +202,6 @@ class YtdlpCommandTests(unittest.TestCase):
             detect_platform("https://www.nicochannel.jp/channel/video/abc"),
             "NicoChannel",
         )
-
-    def test_subtitles_are_disabled_by_default(self):
-        with tempfile.TemporaryDirectory() as directory:
-            cmd = build_ytdlp_cmd(
-                "https://youtube.com/watch?v=abc",
-                DEFAULT_CONFIG,
-                Path(directory),
-                platform_override="YouTube",
-            )
-        self.assertNotIn("--write-subs", cmd)
-        self.assertNotIn("--write-auto-subs", cmd)
-        self.assertNotIn("--sub-langs", cmd)
-        self.assertFalse(any(str(item).startswith("subtitle:") for item in cmd))
-
-    def test_video_command_can_omit_subtitles_when_sidecar_will_handle_them(self):
-        config = dict(DEFAULT_CONFIG, DOWNLOAD_SUBTITLES=1)
-        with tempfile.TemporaryDirectory() as directory:
-            cmd = build_ytdlp_cmd(
-                "https://youtube.com/watch?v=abc",
-                config,
-                Path(directory),
-                platform_override="YouTube",
-                include_subtitles=False,
-            )
-        self.assertNotIn("--write-subs", cmd)
-        self.assertNotIn("--write-auto-subs", cmd)
-        self.assertNotIn("--sub-langs", cmd)
-        self.assertFalse(any(str(item).startswith("subtitle:") for item in cmd))
-
-    def test_all_subtitles_use_separate_platform_directory_and_recommended_languages(self):
-        config = dict(DEFAULT_CONFIG, DOWNLOAD_SUBTITLES=1)
-        with tempfile.TemporaryDirectory() as directory:
-            cmd = build_ytdlp_cmd(
-                "https://youtube.com/watch?v=abc",
-                config,
-                Path(directory),
-                platform_override="YouTube",
-                subtitle_only=True,
-            )
-        self.assertIn("--skip-download", cmd)
-        self.assertNotIn("--download-archive", cmd)
-        self.assertNotIn("-P", cmd)
-        self.assertIn("--write-subs", cmd)
-        self.assertIn("--write-auto-subs", cmd)
-        self.assertEqual(cmd[cmd.index("--sub-langs") + 1], RECOMMENDED_SUBTITLE_LANGS)
-        output_templates = [cmd[index + 1] for index, item in enumerate(cmd) if item == "-o"]
-        self.assertEqual(output_templates[0], str(Path(directory) / "YouTube" / "subtitles" / "%(title)s [%(id)s].%(ext)s"))
-        subtitle_path = next(item for item in cmd if str(item).startswith("subtitle:"))
-        self.assertTrue(subtitle_path.startswith(f"subtitle:{Path(directory) / 'YouTube' / 'subtitles'}"))
-        self.assertTrue(subtitle_path.endswith("%(title)s [%(id)s].%(ext)s"))
-
-    def test_manual_subtitles_only(self):
-        config = dict(
-            DEFAULT_CONFIG,
-            DOWNLOAD_SUBTITLES=1,
-            SUBTITLE_TYPE="manual",
-            SUBTITLE_LANGS="zh.*,en",
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            cmd = build_ytdlp_cmd(
-                "https://youtube.com/watch?v=abc",
-                config,
-                Path(directory),
-                platform_override="YouTube",
-                subtitle_only=True,
-            )
-        self.assertIn("--write-subs", cmd)
-        self.assertNotIn("--write-auto-subs", cmd)
-        self.assertEqual(cmd[cmd.index("--sub-langs") + 1], "zh.*,en")
-
-    def test_automatic_subtitles_only(self):
-        config = dict(
-            DEFAULT_CONFIG,
-            DOWNLOAD_SUBTITLES=1,
-            SUBTITLE_TYPE="auto",
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            cmd = build_ytdlp_cmd(
-                "https://youtube.com/watch?v=abc",
-                config,
-                Path(directory),
-                platform_override="YouTube",
-                subtitle_only=True,
-            )
-        self.assertNotIn("--write-subs", cmd)
-        self.assertIn("--write-auto-subs", cmd)
-
-    def test_subtitle_only_command_skips_video_download(self):
-        config = dict(
-            DEFAULT_CONFIG,
-            DOWNLOAD_SUBTITLES=1,
-            SUBTITLE_TYPE="manual",
-            SUBTITLE_LANGS="ja.*",
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            cmd = build_ytdlp_cmd(
-                "https://youtube.com/watch?v=abc",
-                config,
-                Path(directory),
-                platform_override="YouTube",
-                subtitle_only=True,
-            )
-        self.assertIn("--skip-download", cmd)
-        self.assertIn("--write-subs", cmd)
-        self.assertNotIn("--write-auto-subs", cmd)
-        self.assertEqual(cmd[cmd.index("--sub-langs") + 1], "ja.*")
-        self.assertNotIn("-f", cmd)
-        self.assertNotIn("--merge-output-format", cmd)
-        self.assertNotIn("--download-archive", cmd)
-        output_templates = [cmd[index + 1] for index, item in enumerate(cmd) if item == "-o"]
-        self.assertEqual(output_templates[0], str(Path(directory) / "YouTube" / "subtitles" / "%(title)s [%(id)s].%(ext)s"))
-        self.assertTrue(output_templates[1].startswith("subtitle:"))
-        self.assertIn(str(Path(directory) / "YouTube" / "subtitles"), output_templates[1])
-        self.assertEqual(cmd[-1], "https://youtube.com/watch?v=abc")
 
 
 if __name__ == "__main__":

@@ -1,16 +1,12 @@
 import os
+import re
 import unittest
 
-from video_downloader.web.rendering import (
-    SESSION_TOKEN_PLACEHOLDER,
-    render_html_page,
-    serve_static_file,
-)
+from video_downloader.web.rendering import SESSION_TOKEN_PLACEHOLDER, render_html_page, serve_static_file
 
 
 def _skip_if_frozen():
     import sys
-
     if getattr(sys, "frozen", False):
         raise unittest.SkipTest("PyInstaller frozen mode")
 
@@ -29,9 +25,7 @@ class WebPageTests(unittest.TestCase):
         _skip_if_frozen()
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         template_path = os.path.join(base, "resource", "templates", "index.html")
-        self.assertTrue(
-            os.path.isfile(template_path), f"Template missing: {template_path}"
-        )
+        self.assertTrue(os.path.isfile(template_path), f"Template missing: {template_path}")
         with open(template_path, "r", encoding="utf-8") as f:
             html = f.read()
         self.assertTrue(html.startswith("<!DOCTYPE html>"))
@@ -43,9 +37,9 @@ class WebPageTests(unittest.TestCase):
         self.assertIn("page-tools", html)
         self.assertIn("page-help", html)
         self.assertIn("page-about", html)
-        self.assertIn('class="app-shell"', html)
-        self.assertIn('class="app-sidebar"', html)
-        self.assertIn('class="app-content"', html)
+        self.assertIn('class="app"', html)
+        self.assertIn('class="rail" aria-label="应用侧栏"', html)
+        self.assertIn('class="main"', html)
         self.assertIn('aria-label="主导航"', html)
         self.assertIn("ErgouTree", html)
         self.assertIn("@ergou10086", html)
@@ -54,25 +48,30 @@ class WebPageTests(unittest.TestCase):
         self.assertIn("强壮的砍刀", html)
         self.assertIn("https://github.com/DarkKandaoMaster", html)
         self.assertIn("https://github.com/maomaoyexi", html)
-        # 引用了外部 CSS/JS（重构为自建深色设计系统，不再依赖 Tabler）
-        self.assertIn("/static/css/core.css", html)
-        self.assertIn("/static/css/theme.css", html)
+        # 自建单色墨系设计系统：base.css 定义令牌与组件，dark.css 只覆盖变量
+        self.assertIn("/static/css/base.css", html)
+        self.assertIn("/static/css/dark.css", html)
+        self.assertIn("/static/css/responsive.css", html)
+        self.assertIn("/static/css/animations.css", html)
         self.assertIn("/static/js/app.js", html)
         self.assertNotIn("tabler.min.css", html)
         self.assertNotIn("tabler.min.js", html)
+        # 图标为内联 SVG sprite，不再有独立的 icons.js
+        self.assertIn('<symbol id="i-download"', html)
+        self.assertNotIn("/static/js/icons.js", html)
+        # 下载历史的列表 / 网格视图切换
+        self.assertIn('id="viewList"', html)
+        self.assertIn('id="viewGrid"', html)
         # Token 占位符
         self.assertIn("__SESSION_TOKEN__", html)
         self.assertIn('id="btnWithnyLive"', html)
         self.assertIn('id="nicochannelHint"', html)
+        self.assertIn('id="btnCopyCommand"', html)
+        self.assertIn('id="speedText"', html)
         self.assertIn('id="sw_subtitles"', html)
         self.assertIn('id="s_subtitle_type"', html)
-        self.assertIn('id="s_subtitle_lang_preset"', html)
-        self.assertIn('id="s_subtitle_langs"', html)
         self.assertIn('id="subtitleDownloadDialog"', html)
-        self.assertIn('id="subtitleUrlInput"', html)
-        self.assertIn('id="tool_subtitle_type"', html)
-        self.assertIn('id="tool_subtitle_lang_preset"', html)
-        self.assertIn('id="tool_subtitle_langs"', html)
+        self.assertIn('id="btnSubtitleDownload"', html)
 
     def test_reset_config_uses_post(self):
         _skip_if_frozen()
@@ -84,87 +83,42 @@ class WebPageTests(unittest.TestCase):
         self.assertIn("api('/api/reset-config', {method:'POST'})", js)
         self.assertIn("api('/api/start-withny-live'", js)
 
-    def test_subtitle_controls_are_in_settings_page_only(self):
+    def test_settings_javascript_only_references_existing_form_controls(self):
+        """设置加载/保存不能读取模板中不存在的控件。"""
         _skip_if_frozen()
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        template_path = os.path.join(base, "resource", "templates", "index.html")
-        with open(template_path, "r", encoding="utf-8") as f:
+        with open(os.path.join(base, "resource", "templates", "index.html"), "r", encoding="utf-8") as f:
             html = f.read()
-
-        download_start = html.index('id="page-download"')
-        settings_start = html.index('id="page-settings"')
-        history_start = html.index('id="page-history"')
-        download_html = html[download_start:settings_start]
-        settings_html = html[settings_start:history_start]
-
-        self.assertNotIn('id="subtitleOptions"', download_html)
-        self.assertNotIn('id="sw_subtitles"', download_html)
-        self.assertNotIn('id="s_subtitle_type"', download_html)
-        self.assertNotIn('id="s_subtitle_lang_preset"', download_html)
-        self.assertNotIn('id="s_subtitle_langs"', download_html)
-        self.assertIn('id="subtitleOptions"', settings_html)
-        self.assertIn('id="sw_subtitles"', settings_html)
-        self.assertIn('id="s_subtitle_type"', settings_html)
-        self.assertIn('id="s_subtitle_lang_preset"', settings_html)
-        self.assertIn('id="s_subtitle_langs"', settings_html)
-        self.assertIn("字幕下载", settings_html)
-        self.assertIn("影响单链接、多行链接和 TXT 批量下载", settings_html)
-        self.assertLess(
-            settings_html.index("画质与输出"),
-            settings_html.index('id="subtitleOptions"'),
-        )
-        self.assertLess(
-            settings_html.index('id="subtitleOptions"'),
-            settings_html.index("网络与代理"),
-        )
-
-    def test_subtitle_download_tool_is_in_tools_page(self):
-        _skip_if_frozen()
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        template_path = os.path.join(base, "resource", "templates", "index.html")
-        with open(template_path, "r", encoding="utf-8") as f:
-            html = f.read()
-
-        tools_start = html.index('id="page-tools"')
-        help_start = html.index('id="page-help"')
-        tools_html = html[tools_start:help_start]
-
-        self.assertIn("单独下载字幕", tools_html)
-        self.assertIn('onclick="showSubtitleDownloader()"', tools_html)
-        self.assertIn('id="subtitleDownloadDialog"', tools_html)
-        self.assertIn('id="subtitleUrlInput"', tools_html)
-        self.assertIn('id="tool_subtitle_type"', tools_html)
-        self.assertIn('id="tool_subtitle_lang_preset"', tools_html)
-        self.assertIn('id="tool_subtitle_langs"', tools_html)
-        self.assertIn("不会下载视频", tools_html)
-
-    def test_normal_palette_toggle_is_available(self):
-        _skip_if_frozen()
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(
-            os.path.join(base, "resource", "templates", "index.html"),
-            "r",
-            encoding="utf-8",
-        ) as f:
-            html = f.read()
-        with open(
-            os.path.join(base, "resource", "static", "js", "theme.js"),
-            "r",
-            encoding="utf-8",
-        ) as f:
+        with open(os.path.join(base, "resource", "static", "js", "app.js"), "r", encoding="utf-8") as f:
             js = f.read()
-        with open(
-            os.path.join(base, "resource", "static", "css", "theme.css"),
-            "r",
-            encoding="utf-8",
-        ) as f:
+
+        settings_js = js[js.index("function applyConfig"):js.index("async function saveSettings()")]
+        referenced_ids = set(
+            re.findall(r"(?:\$|isOn|setSwitch)\('([^']+)'", settings_js)
+        )
+        template_ids = set(re.findall(r'id="([^"]+)"', html))
+
+        self.assertEqual(set(), referenced_ids - template_ids)
+
+    def test_only_light_dark_theme_remains(self):
+        """配色切换（Everforest ↔ 中性）已整套删除，只剩明暗两态。"""
+        _skip_if_frozen()
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(base, "resource", "templates", "index.html"), "r", encoding="utf-8") as f:
+            html = f.read()
+        with open(os.path.join(base, "resource", "static", "js", "theme.js"), "r", encoding="utf-8") as f:
+            js = f.read()
+        with open(os.path.join(base, "resource", "static", "css", "dark.css"), "r", encoding="utf-8") as f:
             css = f.read()
-        self.assertIn('id="paletteToggle"', html)
-        self.assertIn('id="paletteToggleMobile"', html)
-        self.assertIn("video-dl-palette", js)
-        self.assertIn("togglePalette", js)
-        self.assertIn('[data-palette="normal"]', css)
-        self.assertIn('[data-theme="light"][data-palette="normal"]', css)
+        self.assertNotIn("data-palette", html)
+        self.assertNotIn("paletteToggle", html)
+        self.assertNotIn("video-dl-palette", js)
+        self.assertNotIn("togglePalette", js)
+        self.assertIn("video-dl-theme", js)
+        self.assertIn("toggleTheme", js)
+        self.assertIn('theme-toggle', html)
+        # 深色只覆盖 :root 里的颜色变量
+        self.assertIn('[data-theme="dark"]{', css)
 
     def test_app_js_has_api_endpoints(self):
         _skip_if_frozen()
@@ -176,28 +130,12 @@ class WebPageTests(unittest.TestCase):
         self.assertIn("/api/events?token=", js)
         self.assertIn("/api/start", js)
         self.assertIn("/api/start-withny-archive", js)
+        self.assertIn("/api/current-command", js)
+        self.assertIn("/api/download-subtitles", js)
+        self.assertIn("[LEGACY_ALL_SUBTITLE_LANGS, '全部字幕']", js)
+        self.assertIn("[DEFAULT_SUBTITLE_LANGS, '中文（默认）']", js)
         self.assertIn('{name:"Withny",color:"#22C55E"}', js)
         self.assertIn("/api/do-update", js)
-        self.assertIn("/api/download-subtitles", js)
-        self.assertIn("DOWNLOAD_SUBTITLES: isOn('sw_subtitles')?1:0", js)
-        self.assertIn("SUBTITLE_TYPE: $('s_subtitle_type').value", js)
-        self.assertIn("SUBTITLE_LANGS: getSubtitleLangsValue()", js)
-        self.assertIn("function applySubtitleLangsValue(value)", js)
-        self.assertIn("function onSubtitleLangPresetChange()", js)
-        self.assertIn("function showSubtitleDownloader()", js)
-        self.assertIn("function startSubtitleDownload()", js)
-        self.assertIn(
-            "fillSelect('tool_subtitle_lang_preset', SUBTITLE_LANG_PRESETS)", js
-        )
-        self.assertIn("fillSelect('s_subtitle_lang_preset', SUBTITLE_LANG_PRESETS)", js)
-        self.assertIn("const LEGACY_ALL_SUBTITLE_LANGS = 'all,-live_chat';", js)
-        self.assertIn("const DEFAULT_SUBTITLE_LANGS = 'ja.*,zh.*,zh-Hans,zh-Hant,en.*,ko.*';", js)
-        self.assertIn("[DEFAULT_SUBTITLE_LANGS, '常用字幕（推荐）']", js)
-        self.assertIn("function normalizeSubtitleLangsValue(value)", js)
-        self.assertIn("['zh.*,zh-Hans,zh-Hant', '中文']", js)
-        self.assertIn("['zh.*,zh-Hans,zh-Hant,en.*', '中文 + 英文']", js)
-        self.assertIn("['custom', '自定义']", js)
-        self.assertNotIn("['all,-live_chat', '全部可用字幕（推荐）']", js)
 
     def test_bilibili_part_title_uses_safe_dom_properties(self):
         _skip_if_frozen()
@@ -210,10 +148,17 @@ class WebPageTests(unittest.TestCase):
         self.assertNotIn("list.innerHTML = parts.map", js)
 
     def test_serve_static_file_css(self):
-        content, mime = serve_static_file("/static/css/theme.css")
+        content, mime = serve_static_file("/static/css/base.css")
         self.assertIsNotNone(content)
         self.assertIn("text/css", mime)
         self.assertIn(b":root", content)
+
+    def test_animation_styles_keep_motion_accessible(self):
+        content, mime = serve_static_file("/static/css/animations.css")
+        self.assertIsNotNone(content)
+        self.assertIn("text/css", mime)
+        self.assertIn(b"@keyframes page-in", content)
+        self.assertIn(b"prefers-reduced-motion:reduce", content)
 
     def test_serve_static_file_js(self):
         content, mime = serve_static_file("/static/js/app.js")
@@ -237,7 +182,6 @@ class WebPageTests(unittest.TestCase):
 
     def test_fallback_html(self):
         from video_downloader.web.rendering import _fallback_html
-
         html = _fallback_html("fallback-token")
         self.assertIsInstance(html, bytes)
         text = html.decode("utf-8")

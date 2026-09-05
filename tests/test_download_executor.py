@@ -5,20 +5,18 @@ from queue import Queue
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from video_downloader.core.constants import LEGACY_ALL_SUBTITLE_LANGS, RECOMMENDED_SUBTITLE_LANGS
 from video_downloader.services.download_executor import DownloadExecutor
 from video_downloader.services.download_manager import DownloadManager
 
 
 class FakeAppState:
-    def __init__(self, config=None):
+    def __init__(self):
         self.download_thread_context = threading.local()
         self.sse_clients = []
         self.batch_stats = {}
-        self._config = config
 
     def config_snapshot(self):
-        default = {
+        return {
             "PLATFORM": "YouTube",
             "USE_COOKIES": 0,
             "COOKIE_MODE": 1,
@@ -29,9 +27,6 @@ class FakeAppState:
             "PROXY_ADDR": "127.0.0.1",
             "PROXY_PORT": "7890",
         }
-        if self._config is not None:
-            default.update(self._config)
-        return default
 
     def publish(self, event):
         for client in self.sse_clients:
@@ -41,7 +36,7 @@ class FakeAppState:
         return bool(self.sse_clients)
 
 
-def create_executor(tool_dir, manager=None, config=None):
+def create_executor(tool_dir, manager=None):
     callbacks = {
         "build_command": Mock(return_value=["yt-dlp"]),
         "log": Mock(),
@@ -57,7 +52,7 @@ def create_executor(tool_dir, manager=None, config=None):
     executor = DownloadExecutor(
         tool_dir=tool_dir,
         exe_suffix=".exe",
-        app_state=FakeAppState(config=config),
+        app_state=FakeAppState(),
         download_manager=manager or DownloadManager(),
         **callbacks,
     )
@@ -261,29 +256,31 @@ class DownloadExecutorTests(unittest.TestCase):
             self.assertEqual(result, {"ok": True})
             self.assertFalse(callbacks["build_command"].call_args.kwargs["is_live"])
 
-    def test_single_download_runs_subtitles_best_effort_after_video_success(self):
+    def test_twitcasting_retry_keeps_subtitle_command(self):
         with tempfile.TemporaryDirectory() as directory:
-            tool_dir = Path(directory)
-            for name in ["yt-dlp.exe", "ffmpeg.exe", "ffprobe.exe"]:
-                (tool_dir / name).touch()
-            executor, callbacks = create_executor(tool_dir, config={"DOWNLOAD_SUBTITLES": 1})
-            callbacks["build_command"].side_effect = [["yt-dlp", "video"], ["yt-dlp", "subs"]]
-            executor._spawn = Mock(side_effect=[CompletedProcess(0), CompletedProcess(1)])
-            done = threading.Event()
-            done.set()
-            executor._start_reader = Mock(side_effect=[(Queue(), done), (Queue(), done)])
-
-            with patch("video_downloader.services.download_executor.threading.Thread", DirectThread):
-                result = executor.start_download("https://youtube.com/watch?v=abc")
-
-            self.assertEqual(result, {"ok": True})
-            self.assertEqual(callbacks["build_command"].call_count, 2)
-            self.assertEqual(callbacks["build_command"].call_args_list[0].kwargs["include_subtitles"], False)
-            self.assertEqual(callbacks["build_command"].call_args_list[1].kwargs["subtitle_only"], True)
-            self.assertEqual(executor._app_state.batch_stats, {"ok": 1, "fail": 0, "total": 1, "current": 1})
-            self.assertTrue(any("不影响视频" in call.args[0] for call in callbacks["log"].call_args_list))
-            callbacks["add_history"].assert_called_once()
-            self.assertEqual(callbacks["add_history"].call_args.args[3], "success")
+            executor, _ = create_executor(Path(directory))
+            handle = executor._download_manager.begin("single")
+            executor._app_state.batch_stats.update({"ok": 0, "fail": 0, "total": 1, "current": 1})
+            process = Mock(returncode=1)
+            process.stdout = None
+            process.poll.return_value = 1
+            executor._spawn = Mock(return_value=process)
+            executor._start_reader = Mock(return_value=(
+                Queue(), threading.Event()
+            ))
+            executor._start_reader.return_value[0].put(
+                "ERROR: Initialization fragment found after media fragments"
+            )
+            executor._start_reader.return_value[1].set()
+            executor._close_process = Mock()
+            executor._finish = Mock()
+            subtitle_cmd = ["yt-dlp", "--skip-download", "url"]
+            with patch.object(executor, "_run_single") as retry:
+                DownloadExecutor._run_single(
+                    executor, handle, ["yt-dlp", "url"], "url", "TwitCasting",
+                    False, "0", "mp3", False, subtitle_cmd,
+                )
+            self.assertIs(retry.call_args.args[-1], subtitle_cmd)
 
     def test_single_thread_start_failure_rolls_back_manager(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -346,72 +343,54 @@ class DownloadExecutorTests(unittest.TestCase):
             statuses = [call.args[1] for call in callbacks["update_progress"].call_args_list]
             self.assertIn("批量下载 2/2", statuses)
 
-    def test_batch_download_runs_subtitles_best_effort_without_failing_item(self):
+    def test_batch_reuses_last_twitcasting_password_and_reprompts_when_invalid(self):
         with tempfile.TemporaryDirectory() as directory:
             tool_dir = Path(directory)
             for name in ["yt-dlp.exe", "ffmpeg.exe", "ffprobe.exe"]:
                 (tool_dir / name).touch()
-            executor, callbacks = create_executor(tool_dir, config={"DOWNLOAD_SUBTITLES": 1})
-            callbacks["build_command"].side_effect = [["yt-dlp", "video"], ["yt-dlp", "subs"]]
-            executor._spawn = Mock(side_effect=[CompletedProcess(0), CompletedProcess(1)])
+            executor, callbacks = create_executor(tool_dir)
+            executor._spawn = Mock(side_effect=[
+                CompletedProcess(1),  # 第一个链接：尚未提供密码
+                CompletedProcess(0),  # 第一个链接：新密码正确
+                CompletedProcess(1),  # 第二个链接：自动复用后密码不正确
+                CompletedProcess(0),  # 第二个链接：再次输入的新密码正确
+            ])
             done = threading.Event()
             done.set()
-            executor._start_reader = Mock(side_effect=[(Queue(), done), (Queue(), done)])
+
+            def reader_with(line=""):
+                lines = Queue()
+                if line:
+                    lines.put(line)
+                return lines, done
+
+            executor._start_reader = Mock(side_effect=[
+                reader_with("ERROR: This video is protected by a password, use the --video-password option"),
+                reader_with(),
+                reader_with("ERROR: Requested format is not available"),
+                reader_with(),
+            ])
+            executor._wait_for_password = Mock(side_effect=["first-password", "second-password"])
 
             with patch("video_downloader.services.download_executor.threading.Thread", DirectThread):
-                result = executor.batch_download(["https://youtube.com/watch?v=abc"])
+                result = executor.batch_download([
+                    "https://twitcasting.tv/user/movie/1",
+                    "https://twitcasting.tv/user/movie/2",
+                ])
 
-            self.assertEqual(result, {"ok": True, "total": 1})
-            self.assertEqual(callbacks["build_command"].call_count, 2)
-            self.assertEqual(callbacks["build_command"].call_args_list[0].kwargs["include_subtitles"], False)
-            self.assertEqual(callbacks["build_command"].call_args_list[1].kwargs["subtitle_only"], True)
-            self.assertEqual(executor._app_state.batch_stats, {"ok": 1, "fail": 0, "total": 1, "current": 1})
-            self.assertTrue(any("不影响视频" in call.args[0] for call in callbacks["log"].call_args_list))
-
-    def test_subtitle_sidecar_retries_recommended_languages_after_legacy_all_rate_limit(self):
-        with tempfile.TemporaryDirectory() as directory:
-            manager = DownloadManager()
-            executor, callbacks = create_executor(Path(directory), manager)
-            first_queue = Queue()
-            first_queue.put("ERROR: Unable to download video subtitles for 'ab': HTTP Error 429: Too Many Requests")
-            second_queue = Queue()
-            second_queue.put("[info] Writing video subtitles to: subtitles/video.ja.vtt")
-            done = threading.Event()
-            done.set()
-            executor._spawn = Mock(side_effect=[CompletedProcess(1), CompletedProcess(0)])
-            executor._start_reader = Mock(side_effect=[(first_queue, done), (second_queue, done)])
-            handle = manager.begin("single")
-
-            ok = executor._run_subtitle_sidecar(
-                handle,
-                ["yt-dlp", "--sub-langs", LEGACY_ALL_SUBTITLE_LANGS, "--skip-download"],
+            self.assertEqual(result, {"ok": True, "total": 2})
+            command_configs = [call.kwargs["config_override"] for call in callbacks["build_command"].call_args_list]
+            self.assertNotIn("TC_PASSWORD", command_configs[0])
+            self.assertEqual(command_configs[1]["TC_PASSWORD"], "first-password")
+            self.assertEqual(command_configs[2]["TC_PASSWORD"], "first-password")
+            self.assertEqual(command_configs[3]["TC_PASSWORD"], "second-password")
+            self.assertEqual(executor._wait_for_password.call_count, 2)
+            self.assertEqual(
+                [call.kwargs["reason"] for call in executor._wait_for_password.call_args_list],
+                ["missing", "retry"],
             )
-
-            self.assertTrue(ok)
-            self.assertEqual(executor._spawn.call_count, 2)
-            self.assertEqual(executor._spawn.call_args_list[1].args[0][2], RECOMMENDED_SUBTITLE_LANGS)
-            self.assertTrue(any("改用常用字幕重试" in call.args[0] for call in callbacks["log"].call_args_list))
-
-    def test_subtitle_sidecar_reports_missing_when_ytdlp_writes_no_subtitle_file(self):
-        with tempfile.TemporaryDirectory() as directory:
-            manager = DownloadManager()
-            executor, callbacks = create_executor(Path(directory), manager)
-            line_queue = Queue()
-            line_queue.put("[info] There are no subtitles for the requested languages")
-            done = threading.Event()
-            done.set()
-            executor._spawn = Mock(return_value=CompletedProcess(0))
-            executor._start_reader = Mock(return_value=(line_queue, done))
-            handle = manager.begin("single")
-
-            ok = executor._run_subtitle_sidecar(
-                handle,
-                ["yt-dlp", "--sub-langs", "ja.*", "--skip-download"],
-            )
-
-            self.assertFalse(ok)
-            self.assertTrue(any("未找到匹配字幕" in call.args[0] for call in callbacks["log"].call_args_list))
-            self.assertFalse(any("字幕下载完成" in call.args[0] for call in callbacks["log"].call_args_list))
+            self.assertEqual(executor._app_state.batch_stats["ok"], 2)
+            self.assertEqual(executor._app_state.batch_stats["fail"], 0)
 
     def test_batch_download_rejects_empty_cleaned_urls(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -445,10 +424,126 @@ class DownloadExecutorTests(unittest.TestCase):
             manager.publish_process(handle, process)
             executor.kill_process_tree = Mock()
             result = executor.stop_download()
-            self.assertEqual(result, {"ok": True, "stopping": True})
+            self.assertEqual(result, {"ok": True, "stopping": False, "stopped": True})
             self.assertTrue(handle.cancel_event.is_set())
             executor.kill_process_tree.assert_called_once_with(process)
+            self.assertFalse(manager.snapshot()["running"])
             callbacks["broadcast_download_state"].assert_called_once_with()
+
+    def test_media_stage_marker_distinguishes_audio_and_video(self):
+        self.assertEqual(
+            DownloadExecutor._media_stage_from_line(
+                "[download] 25.0% __VD_STAGE__avc1.640028|none"
+            ),
+            "video",
+        )
+        self.assertEqual(
+            DownloadExecutor._media_stage_from_line(
+                "[download] 25.0% __VD_STAGE__none|mp4a.40.2"
+            ),
+            "audio",
+        )
+
+    def test_progress_metrics_support_template_speed_and_long_eta(self):
+        speed, eta = DownloadExecutor._progress_metrics_from_line(
+            "[download] 12.0% of 1.0GiB at 12.5MiB/s ETA 01:02:03 "
+            "__VD_STAGE__avc1|none"
+        )
+        self.assertEqual(speed, "12.5MiB/s")
+        self.assertEqual(eta, "01:02:03")
+
+    def test_progress_metrics_clears_unknown_speed_with_unit(self):
+        speed, eta = DownloadExecutor._progress_metrics_from_line(
+            "[download]   0.0% of    6.00MiB at  Unknown B/s ETA Unknown "
+            "__VD_STAGE__NA|NA"
+        )
+        self.assertEqual(speed, "")
+        self.assertEqual(eta, "")
+
+    def test_current_ytdlp_command_is_remembered_and_masks_password(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executor, _ = create_executor(Path(directory))
+            self.assertIn("没有可复制", executor.get_current_ytdlp_command()["error"])
+            executor._remember_ytdlp_command([
+                "yt-dlp.exe", "--video-password", "secret", "https://example.com/video",
+            ])
+            result = executor.get_current_ytdlp_command()
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["redacted"])
+            self.assertIn("***", result["command"])
+            self.assertNotIn("secret", result["command"])
+            self.assertIn("https://example.com/video", result["command"])
+
+    def test_batch_progress_reports_current_item_instead_of_whole_batch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tool_dir = Path(directory)
+            for name in ["yt-dlp.exe", "ffmpeg.exe", "ffprobe.exe"]:
+                (tool_dir / name).touch()
+            executor, callbacks = create_executor(tool_dir)
+            executor._spawn = Mock(side_effect=[CompletedProcess(), CompletedProcess()])
+            done = threading.Event()
+            done.set()
+
+            def progress_reader(stage):
+                lines = Queue()
+                lines.put(f"[download] 50.0% __VD_STAGE__{stage}")
+                return lines, done
+
+            executor._start_reader = Mock(side_effect=[
+                progress_reader("avc1|none"),
+                progress_reader("none|mp4a"),
+            ])
+            with patch("video_downloader.services.download_executor.threading.Thread", DirectThread):
+                executor.batch_download(["one", "two"])
+
+            progress_calls = [
+                call for call in callbacks["update_progress"].call_args_list
+                if call.args and call.args[0] == 0.5
+            ]
+            self.assertEqual(len(progress_calls), 2)
+            self.assertEqual(progress_calls[0].kwargs["stage"], "video")
+            self.assertEqual(progress_calls[1].kwargs["stage"], "audio")
+
+    def test_audio_extraction_is_managed_and_reports_audio_progress(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tool_dir = Path(directory)
+            video_path = str(tool_dir / "video.mp4")
+            manager = DownloadManager()
+            handle = manager.begin("single")
+            executor, callbacks = create_executor(tool_dir, manager)
+            process = CompletedProcess()
+            lines = Queue()
+            lines.put("Duration: 00:00:10.00")
+            lines.put("out_time_us=5000000")
+            done = threading.Event()
+            done.set()
+            executor._start_reader = Mock(return_value=(lines, done))
+
+            with patch("video_downloader.services.download_executor.subprocess.Popen", return_value=process), \
+                    patch("video_downloader.services.download_executor.os.path.isfile", side_effect=[False, True]):
+                self.assertTrue(executor._extract_audio_from_video(video_path, "mp3", handle=handle))
+
+            self.assertIsNone(manager.snapshot()["process"])
+            audio_updates = [
+                call for call in callbacks["update_progress"].call_args_list
+                if call.kwargs.get("stage") == "audio"
+            ]
+            self.assertTrue(audio_updates)
+            self.assertTrue(any(call.args[0] == 0.5 for call in audio_updates))
+
+    def test_stop_wakes_password_wait_and_releases_task(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = DownloadManager()
+            executor, _ = create_executor(Path(directory), manager)
+            manager.begin("batch")
+            executor._waiting_for_password = True
+            executor._password_event.clear()
+
+            result = executor.stop_download()
+
+            self.assertTrue(result["stopped"])
+            self.assertTrue(executor._password_event.is_set())
+            self.assertFalse(manager.snapshot()["running"])
 
     def test_stop_download_is_idempotent_when_idle(self):
         with tempfile.TemporaryDirectory() as directory:
