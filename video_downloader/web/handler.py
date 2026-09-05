@@ -6,63 +6,107 @@ import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
+from typing import Any, Callable, Protocol, TypeAlias, cast
 from urllib.parse import parse_qs, urlparse
+
+from video_downloader.core.constants import RECOMMENDED_SUBTITLE_LANGS
+
+JsonDict: TypeAlias = dict[str, Any]
+HttpResult: TypeAlias = JsonDict
+MaybeBytesResponse: TypeAlias = tuple[bytes | None, str | None]
+ExpectedFieldType: TypeAlias = type[Any] | tuple[type[Any], ...]
+
+
+class AppStateLike(Protocol):
+    config_lock: Any
+    log_history: list[Any]
+    progress_data: JsonDict
+    batch_stats: JsonDict
+
+    def config_snapshot(self) -> JsonDict: ...
+    def replace_config(self, values: JsonDict) -> None: ...
+    def add_sse_client(self, client: queue.Queue[Any], ready_factory: Callable[[], JsonDict]) -> None: ...
+    def remove_sse_client(self, client: queue.Queue[Any]) -> bool: ...
+
+
+class DownloadManagerLike(Protocol):
+    def snapshot(self) -> JsonDict: ...
+
+
+class UpdaterLike(Protocol):
+    def is_checking(self) -> bool: ...
+    def start_check_thread(self, silent: bool) -> None: ...
+    def snapshot(self) -> JsonDict: ...
+    def do_update(self) -> HttpResult: ...
+
+
+class StoppableServer(Protocol):
+    stop_event: threading.Event
+
+
+class StartDownloadFn(Protocol):
+    def __call__(self, url: str, *, bili_parts: Any = None, tc_password: str | None = None) -> HttpResult: ...
+
+
+class BatchTxtDownloadFn(Protocol):
+    def __call__(self, *, bili_parts_map: Any = None) -> HttpResult: ...
 
 
 @dataclass(frozen=True)
 class HttpHandlerDependencies:
     session_token: str
     version: str
-    default_config: dict
-    app_state: object
-    download_manager: object
-    updater: object
-    render_html_page: object
-    serve_static_file: object
-    check_deps: object
-    load_presets: object
-    load_history: object
-    cancel_idle_timer: object
-    start_idle_timer: object
-    start_download: object
-    start_withny_archive: object
-    start_withny_live: object
-    batch_txt_download: object
-    start_urls_download: object
-    stop_download: object
-    submit_password: object
-    fetch_bili_playlist: object
-    save_preset: object
-    load_preset: object
-    delete_preset: object
-    clear_history: object
-    find_cover: object
-    validate_config: object
-    save_config: object
-    handle_tool_action: object
-    browse_folder: object
-    update_ytdlp: object
-    clean_temp: object
-    gen_url_template: object
-    wav_to_mp3: object
-    audio_loudnorm: object
-    audio_volume: object
-    request_exit: object
+    default_config: JsonDict
+    app_state: AppStateLike
+    download_manager: DownloadManagerLike
+    updater: UpdaterLike
+    render_html_page: Callable[[str], bytes]
+    serve_static_file: Callable[[str], MaybeBytesResponse]
+    check_deps: Callable[[], HttpResult]
+    load_presets: Callable[[], dict[str, Any]]
+    load_history: Callable[[], list[Any]]
+    cancel_idle_timer: Callable[[], Any]
+    start_idle_timer: Callable[[], Any]
+    start_download: StartDownloadFn
+    start_withny_archive: Callable[[], HttpResult]
+    start_withny_live: Callable[[], HttpResult]
+    batch_txt_download: BatchTxtDownloadFn
+    start_urls_download: Callable[[list[str]], HttpResult]
+    stop_download: Callable[[], HttpResult]
+    submit_password: Callable[[str, str], HttpResult]
+    fetch_bili_playlist: Callable[[str], HttpResult]
+    save_preset: Callable[[str], HttpResult]
+    load_preset: Callable[[str], HttpResult]
+    delete_preset: Callable[[str], HttpResult]
+    clear_history: Callable[[], HttpResult]
+    find_cover: Callable[[str], MaybeBytesResponse]
+    validate_config: Callable[[JsonDict, JsonDict], tuple[JsonDict, list[str]]]
+    save_config: Callable[[], Any]
+    handle_tool_action: Callable[[str], HttpResult]
+    browse_folder: Callable[[], HttpResult]
+    update_ytdlp: Callable[[], HttpResult]
+    clean_temp: Callable[[], HttpResult]
+    gen_url_template: Callable[[], HttpResult]
+    wav_to_mp3: Callable[[str, bool, int, bool], HttpResult]
+    audio_loudnorm: Callable[[str, bool, str, int | float, int | float, int | float, str, str], HttpResult]
+    audio_volume: Callable[[str, bool, int | float, bool, str, str], HttpResult]
+    download_subtitles: Callable[[list[str], str, str], HttpResult]
+    request_exit: Callable[[], Any]
 
 
-def create_handler(dependencies):
+def create_handler(dependencies: HttpHandlerDependencies):
     class RequestHandler(BaseHTTPRequestHandler):
-        def log_message(self, format, *args):
+        def log_message(self, format: str, *args: Any) -> None:
             pass
 
-        def _is_local_request(self):
+        def _is_local_request(self) -> bool:
             host = self.headers.get("Host", "").split(":", 1)[0].lower()
             if host not in ("127.0.0.1", "localhost"):
                 return False
             origin = self.headers.get("Origin")
             return not origin or origin == f"http://{self.headers.get('Host', '')}"
 
-        def _is_authorized(self, parsed=None):
+        def _is_authorized(self, parsed: Any = None) -> bool:
             if not self._is_local_request():
                 return False
             token = self.headers.get("X-Session-Token", "")
@@ -70,10 +114,10 @@ def create_handler(dependencies):
                 token = parse_qs(parsed.query).get("token", [""])[0]
             return secrets.compare_digest(token, dependencies.session_token)
 
-        def _forbidden(self):
+        def _forbidden(self) -> None:
             self.send_error(403, "Forbidden")
 
-        def do_GET(self):
+        def do_GET(self) -> None:
             parsed = urlparse(self.path)
             path = parsed.path
             if path == "/" or path == "/index.html":
@@ -84,11 +128,18 @@ def create_handler(dependencies):
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
-                self.wfile.write(dependencies.render_html_page(dependencies.session_token))
+                self.wfile.write(
+                    dependencies.render_html_page(dependencies.session_token)
+                )
             elif path.startswith("/api/") and not self._is_authorized(parsed):
                 self._forbidden()
             elif path == "/api/config":
-                self._json({"version": dependencies.version, "config": dependencies.app_state.config_snapshot()})
+                self._json(
+                    {
+                        "version": dependencies.version,
+                        "config": dependencies.app_state.config_snapshot(),
+                    }
+                )
             elif path == "/api/deps":
                 self._json(dependencies.check_deps())
             elif path == "/api/presets":
@@ -101,6 +152,8 @@ def create_handler(dependencies):
                 if content is None:
                     self.send_error(404)
                     return
+                if content_type is None:
+                    content_type = "application/octet-stream"
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Cache-Control", "no-store")
@@ -122,6 +175,8 @@ def create_handler(dependencies):
                 if content is None:
                     self.send_error(404)
                     return
+                if content_type is None:
+                    content_type = "application/octet-stream"
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
                 # 静态资源缓存1小时（版本号变更时URL可加?v=参数强制刷新）
@@ -131,30 +186,36 @@ def create_handler(dependencies):
             else:
                 self.send_error(404)
 
-        def _serve_events(self):
+        def _serve_events(self) -> None:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
             self.end_headers()
-            def ready_event():
+
+            def ready_event() -> JsonDict:
                 download_snapshot = dependencies.download_manager.snapshot()
-                return {"type": "ready", "data": {
-                    "logs": dependencies.app_state.log_history[-50:],
-                    "running": download_snapshot["running"],
-                    "phase": download_snapshot["phase"],
-                    "generation": download_snapshot["generation"],
-                    "progress": dict(dependencies.app_state.progress_data),
-                    "stats": dict(dependencies.app_state.batch_stats),
-                    "update": dependencies.updater.snapshot(),
-                }}
+                return {
+                    "type": "ready",
+                    "data": {
+                        "logs": dependencies.app_state.log_history[-50:],
+                        "running": download_snapshot["running"],
+                        "phase": download_snapshot["phase"],
+                        "generation": download_snapshot["generation"],
+                        "progress": dict(dependencies.app_state.progress_data),
+                        "stats": dict(dependencies.app_state.batch_stats),
+                        "update": dependencies.updater.snapshot(),
+                    },
+                }
+
             # 每个 SSE 连接使用有界队列；慢连接的丢旧保新策略由 AppState 统一执行。
-            client_queue = queue.Queue(maxsize=256)
+            client_queue: queue.Queue[JsonDict] = queue.Queue(maxsize=256)
             dependencies.app_state.add_sse_client(client_queue, ready_event)
             dependencies.cancel_idle_timer()
             last_keepalive = time.monotonic()
+            server = cast(StoppableServer, self.server)
             try:
-                while not self.server.stop_event.is_set():
+                while not server.stop_event.is_set():
                     try:
                         event = client_queue.get(timeout=1)
                         data = json.dumps(event, ensure_ascii=False)
@@ -171,17 +232,23 @@ def create_handler(dependencies):
                 pass
             finally:
                 no_clients = dependencies.app_state.remove_sse_client(client_queue)
-                if no_clients and not dependencies.download_manager.snapshot()["running"] and not self.server.stop_event.is_set():
+                if (
+                    no_clients
+                    and not dependencies.download_manager.snapshot()["running"]
+                    and not server.stop_event.is_set()
+                ):
                     dependencies.start_idle_timer()
 
-        def do_POST(self):
+        def do_POST(self) -> None:
             parsed = urlparse(self.path)
             path = parsed.path
             if not self._is_authorized(parsed):
                 self._forbidden()
                 return
             if self.headers.get_content_type() != "application/json":
-                self._json({"error": "Content-Type 必须为 application/json"}, status=415)
+                self._json(
+                    {"error": "Content-Type 必须为 application/json"}, status=415
+                )
                 return
             try:
                 length = int(self.headers.get("Content-Length", 0))
@@ -203,6 +270,7 @@ def create_handler(dependencies):
             if not isinstance(data, dict):
                 self._json({"error": "JSON 请求体必须是对象"}, status=400)
                 return
+            data = cast(JsonDict, data)
             if path == "/api/start":
                 url = self._field(data, "url", str, "")
                 if url is None:
@@ -213,7 +281,11 @@ def create_handler(dependencies):
                     self._json({"error": "字段 tc_password 类型错误"}, status=400)
                     return
                 tc_password = tc_password or None
-                self._json(dependencies.start_download(url, bili_parts=bili_parts, tc_password=tc_password))
+                self._json(
+                    dependencies.start_download(
+                        url, bili_parts=bili_parts, tc_password=tc_password
+                    )
+                )
             elif path == "/api/start-withny-archive":
                 self._json(dependencies.start_withny_archive())
             elif path == "/api/start-withny-live":
@@ -239,7 +311,27 @@ def create_handler(dependencies):
                 self._json(dependencies.start_urls_download(urls))
             elif path == "/api/batch-txt":
                 bili_parts_map = data.get("bili_parts_map") or None
-                self._json(dependencies.batch_txt_download(bili_parts_map=bili_parts_map))
+                self._json(
+                    dependencies.batch_txt_download(bili_parts_map=bili_parts_map)
+                )
+            elif path == "/api/download-subtitles":
+                urls = self._field(data, "urls", list, [])
+                if urls is None:
+                    return
+                if not all(isinstance(u, str) for u in urls):
+                    self._json({"error": "字段 urls 必须是字符串数组"}, status=400)
+                    return
+                subtitle_type = self._field(data, "subtitle_type", str, "all")
+                if subtitle_type is None:
+                    return
+                subtitle_langs = self._field(
+                    data, "subtitle_langs", str, RECOMMENDED_SUBTITLE_LANGS
+                )
+                if subtitle_langs is None:
+                    return
+                self._json(
+                    dependencies.download_subtitles(urls, subtitle_type, subtitle_langs)
+                )
             elif path == "/api/bili-playlist":
                 url = self._field(data, "url", str, "")
                 if url is None:
@@ -266,7 +358,9 @@ def create_handler(dependencies):
                     previous = dependencies.app_state.config_snapshot()
                     validated, errors = dependencies.validate_config(data, previous)
                     if errors:
-                        self._json({"error": f"无效设置: {', '.join(errors)}"}, status=400)
+                        self._json(
+                            {"error": f"无效设置: {', '.join(errors)}"}, status=400
+                        )
                         return
                     dependencies.app_state.replace_config(validated)
                     try:
@@ -312,7 +406,9 @@ def create_handler(dependencies):
                 del_src = self._field(data, "del_src", bool, False)
                 if del_src is None:
                     return
-                self._json(dependencies.wav_to_mp3(directory, recursive, bitrate, del_src))
+                self._json(
+                    dependencies.wav_to_mp3(directory, recursive, bitrate, del_src)
+                )
             elif path == "/api/audio-loudnorm":
                 directory = self._field(data, "dir", str, "")
                 if directory is None:
@@ -338,9 +434,18 @@ def create_handler(dependencies):
                 output_format = self._field(data, "output_format", str, "")
                 if output_format is None:
                     return
-                self._json(dependencies.audio_loudnorm(
-                    directory, recursive, mode, i_target, lra_target, tp_target,
-                    output_dir, output_format))
+                self._json(
+                    dependencies.audio_loudnorm(
+                        directory,
+                        recursive,
+                        mode,
+                        i_target,
+                        lra_target,
+                        tp_target,
+                        output_dir,
+                        output_format,
+                    )
+                )
             elif path == "/api/audio-volume":
                 directory = self._field(data, "dir", str, "")
                 if directory is None:
@@ -360,9 +465,16 @@ def create_handler(dependencies):
                 output_format = self._field(data, "output_format", str, "")
                 if output_format is None:
                     return
-                self._json(dependencies.audio_volume(
-                    directory, recursive, gain_db, limiter_enabled,
-                    output_dir, output_format))
+                self._json(
+                    dependencies.audio_volume(
+                        directory,
+                        recursive,
+                        gain_db,
+                        limiter_enabled,
+                        output_dir,
+                        output_format,
+                    )
+                )
             elif path == "/api/do-update":
                 self._json(dependencies.updater.do_update())
             elif path == "/api/exit":
@@ -371,13 +483,12 @@ def create_handler(dependencies):
             else:
                 self.send_error(404)
 
-        def _field(self, data, name, expected_type, default):
+        def _field(self, data: JsonDict, name: str, expected_type: ExpectedFieldType, default: Any) -> Any:
             value = data.get(name, default)
             # bool is a subclass of int — reject it for numeric types
             if isinstance(value, bool):
-                is_int = expected_type is int
-                is_num_tuple = isinstance(expected_type, tuple) and (int in expected_type or float in expected_type)
-                if is_int or is_num_tuple or expected_type is float:
+                expected_types = expected_type if isinstance(expected_type, tuple) else (expected_type,)
+                if int in expected_types or float in expected_types:
                     self._json({"error": f"字段 {name} 类型错误"}, status=400)
                     return None
             if not isinstance(value, expected_type):
@@ -385,11 +496,11 @@ def create_handler(dependencies):
                 return None
             return value
 
-        def _request_exit(self):
+        def _request_exit(self) -> None:
             time.sleep(0.5)
             dependencies.request_exit()
 
-        def _json(self, obj, status=200):
+        def _json(self, obj: Any, status: int = 200) -> None:
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -404,32 +515,32 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     block_on_close = False
     allow_reuse_address = True
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any):
         self.stop_event = threading.Event()
         super().__init__(*args, **kwargs)
 
 
 class HttpService:
-    def __init__(self, handler_factory, host="127.0.0.1", port=0):
+    def __init__(self, handler_factory: Callable[[], type[BaseHTTPRequestHandler]], host: str = "127.0.0.1", port: int = 0):
         self._handler_factory = handler_factory
         self._host = host
         self._requested_port = port
-        self._server = None
-        self._thread = None
+        self._server: ThreadedHTTPServer | None = None
+        self._thread: threading.Thread | None = None
 
     @property
-    def port(self):
+    def port(self) -> int | None:
         if self._server is None:
             return None
         return self._server.server_address[1]
 
     @property
-    def url(self):
+    def url(self) -> str | None:
         if self.port is None:
             return None
         return f"http://{self._host}:{self.port}"
 
-    def start(self):
+    def start(self) -> str | None:
         if self._server is not None:
             return self.url
         self._server = ThreadedHTTPServer(
@@ -440,7 +551,7 @@ class HttpService:
         self._thread.start()
         return self.url
 
-    def stop(self):
+    def stop(self) -> None:
         if self._server is None:
             return
         server = self._server
